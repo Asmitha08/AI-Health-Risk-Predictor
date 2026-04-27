@@ -8,25 +8,32 @@ import { predictRisk } from './logic.js';
 dotenv.config();
 
 const PORT = process.env.PORT || 5000;
-const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017';
+const MONGO_URI = process.env.MONGO_URI;
 const DB_NAME = 'healthPredictor';
 const JWT_SECRET = process.env.JWT_SECRET || 'super-secret-key';
 
-let db;
+let cachedClient = null;
+let cachedDb = null;
 
-// Connect to MongoDB
 async function connectDB() {
+  if (cachedDb) return cachedDb;
+  
+  if (!MONGO_URI) {
+    throw new Error('MONGO_URI environment variable is not defined');
+  }
+
   try {
     const client = await MongoClient.connect(MONGO_URI);
-    db = client.db(DB_NAME);
+    const db = client.db(DB_NAME);
+    cachedClient = client;
+    cachedDb = db;
     console.log('Connected to MongoDB');
+    return db;
   } catch (err) {
     console.error('Failed to connect to MongoDB', err);
-    process.exit(1);
+    throw err;
   }
 }
-
-connectDB();
 
 // Helper to get JSON from request body
 const getJSONBody = (req) => new Promise((resolve, reject) => {
@@ -50,7 +57,7 @@ const authenticate = (req) => {
   }
 };
 
-const server = http.createServer(async (req, res) => {
+const handler = async (req, res) => {
   // CORS Headers
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -63,10 +70,14 @@ const server = http.createServer(async (req, res) => {
   }
 
   const { url, method } = req;
+  const db = await connectDB();
 
   try {
+    // Normalize URL (remove /api prefix if present for Vercel support)
+    const normalizedUrl = url.replace(/^\/api/, '');
+
     // --- Auth Routes ---
-    if (url === '/auth/signup' && method === 'POST') {
+    if (normalizedUrl === '/auth/signup' && method === 'POST') {
       const { email, password, name } = await getJSONBody(req);
       const hashedPassword = await bcrypt.hash(password, 10);
       const existingUser = await db.collection('users').findOne({ email });
@@ -80,7 +91,7 @@ const server = http.createServer(async (req, res) => {
       return res.end(JSON.stringify({ token, user: { id: result.insertedId, email, name } }));
     }
 
-    if (url === '/auth/login' && method === 'POST') {
+    if (normalizedUrl === '/auth/login' && method === 'POST') {
       const { email, password } = await getJSONBody(req);
       const user = await db.collection('users').findOne({ email });
       if (!user || !(await bcrypt.compare(password, user.password))) {
@@ -99,7 +110,7 @@ const server = http.createServer(async (req, res) => {
       return res.end(JSON.stringify({ error: 'Unauthorized' }));
     }
 
-    if (url === '/predict' && method === 'POST') {
+    if (normalizedUrl === '/predict' && method === 'POST') {
       const data = await getJSONBody(req);
       const result = predictRisk(data);
       const prediction = {
@@ -113,7 +124,7 @@ const server = http.createServer(async (req, res) => {
       return res.end(JSON.stringify({ ...result, id: saved.insertedId }));
     }
 
-    if (url === '/history' && method === 'GET') {
+    if (normalizedUrl === '/history' && method === 'GET') {
       const history = await db.collection('predictions')
         .find({ userId: new ObjectId(user.userId) })
         .sort({ timestamp: -1 })
@@ -131,8 +142,22 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(500);
     res.end(JSON.stringify({ error: 'Internal Server Error' }));
   }
-});
+};
 
-server.listen(PORT, () => {
-  console.log(`🚀 Node.js + MongoDB Server running on port ${PORT}`);
-});
+// Export the handler for Vercel
+export default handler;
+
+// For local development
+if (process.env.NODE_ENV !== 'production' && import.meta.url === `file://${process.argv[1]}`) {
+  const server = http.createServer(handler);
+  server.listen(PORT, () => {
+    console.log(`🚀 Local Server running on port ${PORT}`);
+  });
+} else if (process.env.NODE_ENV !== 'production') {
+  // Fallback for some environments where import.meta.url check is tricky
+  const server = http.createServer(handler);
+  server.listen(PORT, () => {
+    console.log(`🚀 Local Server running on port ${PORT}`);
+  });
+}
+
