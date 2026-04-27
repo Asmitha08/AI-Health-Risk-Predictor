@@ -12,19 +12,19 @@ A premium, portfolio-ready full-stack application built with **React.js**, **Pur
 ## 🛠️ Tech Stack
 - **Frontend**: React 18, Vite, Tailwind CSS, Recharts, Framer Motion.
 - **Backend**: Pure Node.js (`http` module), JWT, Bcrypt.
-- **Database**: MongoDB.
+- **Database**: MongoDB (Atlas/Local).
 
 ## 🚀 Quick Start
 
 ### 1. Prerequisites
 - Node.js (v16+)
-- MongoDB (Local or Atlas)
+- MongoDB Atlas account (or local MongoDB)
 
 ### 2. Environment Setup
-Create a `.env` file in the `/server` directory:
+Ensure you have a `.env` file in the `/server` directory with your connection string:
 ```env
-MONGO_URI=mongodb://localhost:27017
-JWT_SECRET=your_jwt_secret_key
+MONGO_URI=mongodb+srv://<user>:<password>@cluster.mongodb.net/healthPredictor
+JWT_SECRET=your_secret_key
 PORT=5000
 ```
 
