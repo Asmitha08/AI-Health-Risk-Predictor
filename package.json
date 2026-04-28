@@ -3,6 +3,7 @@
   "version": "2.0.0",
   "description": "Premium AI Health Risk Predictor with React, Pure Node, and Firebase",
   "scripts": {
+    "postinstall": "cd client && npm install && cd ../server && npm install",
     "install:all": "npm install && cd client && npm install && cd ../server && npm install",
     "dev:client": "cd client && npm run dev",
     "dev:server": "cd server && npm run dev",
