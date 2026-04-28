@@ -27,6 +27,14 @@ const Login = ({ onLogin }) => {
         body: JSON.stringify(payload),
       });
 
+      // Check if the response is actually JSON
+      const contentType = response.headers.get("content-type");
+      if (!contentType || !contentType.includes("application/json")) {
+        const text = await response.text();
+        console.error("Non-JSON response received:", text);
+        throw new Error(`Server returned non-JSON response. It might be a deployment error. (Status: ${response.status})`);
+      }
+
       const data = await response.json();
 
       if (!response.ok) {
@@ -36,10 +44,12 @@ const Login = ({ onLogin }) => {
       onLogin(data.user, data.token);
       navigate('/dashboard');
     } catch (err) {
+      console.error("Auth error:", err);
       setError(err.message);
     } finally {
       setLoading(false);
     }
+
   };
 
   return (

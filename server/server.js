@@ -1,4 +1,5 @@
-import http from 'http';
+import express from 'express';
+import cors from 'cors';
 import { MongoClient, ObjectId } from 'mongodb';
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
@@ -7,10 +8,15 @@ import { predictRisk } from './logic.js';
 
 dotenv.config();
 
+const app = express();
 const PORT = process.env.PORT || 5000;
-const MONGO_URI = process.env.MONGO_URI;
+const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017';
 const DB_NAME = 'healthPredictor';
-const JWT_SECRET = process.env.JWT_SECRET || 'super-secret-key';
+const JWT_SECRET = String(process.env.JWT_SECRET || 'super-secret-key');
+
+// Middleware
+app.use(cors());
+app.use(express.json());
 
 let cachedClient = null;
 let cachedDb = null;
@@ -18,146 +24,155 @@ let cachedDb = null;
 async function connectDB() {
   if (cachedDb) return cachedDb;
   
-  if (!MONGO_URI) {
-    throw new Error('MONGO_URI environment variable is not defined');
-  }
-
   try {
     const client = await MongoClient.connect(MONGO_URI);
     const db = client.db(DB_NAME);
     cachedClient = client;
     cachedDb = db;
-    console.log('Connected to MongoDB');
+    console.log('✅ Connected to MongoDB');
     return db;
   } catch (err) {
-    console.error('Failed to connect to MongoDB', err);
+    console.error('❌ Failed to connect to MongoDB:', err.message);
     throw err;
   }
 }
 
-// Helper to get JSON from request body
-const getJSONBody = (req) => new Promise((resolve, reject) => {
-  let body = '';
-  req.on('data', chunk => body += chunk.toString());
-  req.on('end', () => {
-    try { resolve(JSON.parse(body)); }
-    catch (err) { reject(err); }
-  });
-});
-
 // Middleware for JWT verification
-const authenticate = (req) => {
+const authenticate = (req, res, next) => {
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.split(' ')[1];
-  if (!token) return null;
+  
+  if (!token) {
+    return res.status(401).json({ error: 'Unauthorized: No token provided' });
+  }
+
   try {
-    return jwt.verify(token, JWT_SECRET);
+    const decoded = jwt.verify(token, JWT_SECRET);
+    req.user = decoded;
+    next();
   } catch (err) {
-    return null;
+    console.error('[JWT ERROR]', err.message);
+    return res.status(401).json({ error: 'Unauthorized: Invalid or expired token' });
   }
 };
 
-const handler = async (req, res) => {
-  // CORS Headers
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-
-  if (req.method === 'OPTIONS') {
-    res.writeHead(204);
-    res.end();
-    return;
-  }
-
-  const { url, method } = req;
-  const db = await connectDB();
-
+// Ensure DB is connected before handling requests
+app.use(async (req, res, next) => {
   try {
-    // Normalize URL (remove /api prefix if present for Vercel support)
-    const normalizedUrl = url.replace(/^\/api/, '');
-
-    // --- Auth Routes ---
-    if (normalizedUrl === '/auth/signup' && method === 'POST') {
-      const { email, password, name } = await getJSONBody(req);
-      const hashedPassword = await bcrypt.hash(password, 10);
-      const existingUser = await db.collection('users').findOne({ email });
-      if (existingUser) {
-        res.writeHead(400);
-        return res.end(JSON.stringify({ error: 'User already exists' }));
-      }
-      const result = await db.collection('users').insertOne({ email, password: hashedPassword, name });
-      const token = jwt.sign({ userId: result.insertedId, email }, JWT_SECRET, { expiresIn: '7d' });
-      res.writeHead(201);
-      return res.end(JSON.stringify({ token, user: { id: result.insertedId, email, name } }));
-    }
-
-    if (normalizedUrl === '/auth/login' && method === 'POST') {
-      const { email, password } = await getJSONBody(req);
-      const user = await db.collection('users').findOne({ email });
-      if (!user || !(await bcrypt.compare(password, user.password))) {
-        res.writeHead(401);
-        return res.end(JSON.stringify({ error: 'Invalid credentials' }));
-      }
-      const token = jwt.sign({ userId: user._id, email }, JWT_SECRET, { expiresIn: '7d' });
-      res.writeHead(200);
-      return res.end(JSON.stringify({ token, user: { id: user._id, email, name: user.name } }));
-    }
-
-    // --- Protected Routes ---
-    const user = authenticate(req);
-    if (!user) {
-      res.writeHead(401);
-      return res.end(JSON.stringify({ error: 'Unauthorized' }));
-    }
-
-    if (normalizedUrl === '/predict' && method === 'POST') {
-      const data = await getJSONBody(req);
-      const result = predictRisk(data);
-      const prediction = {
-        ...data,
-        ...result,
-        userId: new ObjectId(user.userId),
-        timestamp: new Date()
-      };
-      const saved = await db.collection('predictions').insertOne(prediction);
-      res.writeHead(200);
-      return res.end(JSON.stringify({ ...result, id: saved.insertedId }));
-    }
-
-    if (normalizedUrl === '/history' && method === 'GET') {
-      const history = await db.collection('predictions')
-        .find({ userId: new ObjectId(user.userId) })
-        .sort({ timestamp: -1 })
-        .limit(20)
-        .toArray();
-      res.writeHead(200);
-      return res.end(JSON.stringify(history));
-    }
-
-    res.writeHead(404);
-    res.end(JSON.stringify({ error: 'Route not found' }));
-
+    req.db = await connectDB();
+    next();
   } catch (err) {
-    console.error(err);
-    res.writeHead(500);
-    res.end(JSON.stringify({ error: 'Internal Server Error' }));
+    res.status(500).json({ error: 'Database connection failed' });
   }
-};
+});
 
-// Export the handler for Vercel
-export default handler;
+const router = express.Router();
+
+// --- Auth Routes ---
+router.post('/auth/signup', async (req, res) => {
+  try {
+    const { email, password, name } = req.body;
+    const db = req.db;
+
+    const hashedPassword = await bcrypt.hash(password, 10);
+    const existingUser = await db.collection('users').findOne({ email });
+    
+    if (existingUser) {
+      return res.status(400).json({ error: 'User already exists' });
+    }
+    
+    const result = await db.collection('users').insertOne({ email, password: hashedPassword, name });
+    const token = jwt.sign({ userId: result.insertedId, email }, JWT_SECRET, { expiresIn: '7d' });
+    
+    res.status(201).json({ token, user: { id: result.insertedId, email, name } });
+  } catch (err) {
+    console.error('[SIGNUP ERROR]', err);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+router.post('/auth/login', async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    const db = req.db;
+
+    const user = await db.collection('users').findOne({ email });
+    if (!user || !(await bcrypt.compare(password, user.password))) {
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+    
+    const token = jwt.sign({ userId: user._id, email }, JWT_SECRET, { expiresIn: '7d' });
+    res.status(200).json({ token, user: { id: user._id, email, name: user.name } });
+  } catch (err) {
+    console.error('[LOGIN ERROR]', err);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// --- Protected Routes ---
+router.post('/predict', authenticate, async (req, res) => {
+  try {
+    const data = req.body;
+    const db = req.db;
+    const user = req.user;
+
+    const result = predictRisk(data);
+    const prediction = {
+      ...data,
+      ...result,
+      userId: new ObjectId(user.userId),
+      timestamp: new Date()
+    };
+    
+    const saved = await db.collection('predictions').insertOne(prediction);
+    res.status(200).json({ ...result, id: saved.insertedId });
+  } catch (err) {
+    console.error('[PREDICT ERROR]', err);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+router.get('/history', authenticate, async (req, res) => {
+  try {
+    const db = req.db;
+    const user = req.user;
+
+    const history = await db.collection('predictions')
+      .find({ userId: new ObjectId(user.userId) })
+      .sort({ timestamp: -1 })
+      .limit(20)
+      .toArray();
+      
+    res.status(200).json(history);
+  } catch (err) {
+    console.error('[HISTORY ERROR]', err);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// Apply router to both base URL and /api (to handle Vercel rewrites gracefully)
+app.use('/', router);
+app.use('/api', router);
+
+// Catch-all for undefined routes
+app.use((req, res) => {
+  res.status(404).json({ error: 'Route not found' });
+});
+
+// Export the app for Vercel
+export default app;
+
+// Vercel serverless function configuration to allow Express to parse the body
+export const config = {
+  api: {
+    bodyParser: false,
+  },
+};
 
 // For local development
-if (process.env.NODE_ENV !== 'production' && import.meta.url === `file://${process.argv[1]}`) {
-  const server = http.createServer(handler);
-  server.listen(PORT, () => {
-    console.log(`🚀 Local Server running on port ${PORT}`);
-  });
-} else if (process.env.NODE_ENV !== 'production') {
-  // Fallback for some environments where import.meta.url check is tricky
-  const server = http.createServer(handler);
-  server.listen(PORT, () => {
-    console.log(`🚀 Local Server running on port ${PORT}`);
+const isDirectRun = process.argv[1] && process.argv[1].indexOf('server.js') !== -1;
+if (process.env.NODE_ENV !== 'production' && isDirectRun) {
+  app.listen(PORT, () => {
+    console.log(`🚀 Local Express Server running on port ${PORT}`);
   });
 }
-
