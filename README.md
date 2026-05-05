@@ -1,6 +1,6 @@
 # AI Health Risk Predictor 🚀
 
-A premium, portfolio-ready full-stack application built with **React.js**, **Pure Node.js** (no Express), and **MongoDB**.
+A  full-stack application built with **React.js**, **Pure Node.js** (no Express), and **MongoDB**.
 
 ## ✨ Features
 - **Modern Dashboard**: Real-time analytics and risk trend visualization.
@@ -46,4 +46,4 @@ npm start
 - `package.json`: Unified script management.
 
 ---
-*Note: This project is designed for internship portfolios to demonstrate full-stack integration, UI/UX skills, and database management without relying on heavy frameworks.*
+
